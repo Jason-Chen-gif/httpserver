@@ -13,7 +13,11 @@
 #define MAXSIZE 2000
 
 int do_read(){
+return 0;
+}
 
+int do_write(){
+	return 0;
 }
 
 int main(int argc,char *argv[])
