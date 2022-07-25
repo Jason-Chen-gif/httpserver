@@ -10,6 +10,8 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <ctype.h>
 
 #define MAXSIZE 2000
 
@@ -224,9 +226,125 @@ void send_data(int cfd,const char *file)
 	}
 	close(fd);
 }
-void send_dir(int cfd,const char *file)
+
+int  hexit(char c)
 {
-	return;
+	if (c>='0' && c<='9')
+		return c - '0';
+	if (c >= 'a' && c<= 'f')
+		return c -'a'+ 10;
+	if (c>= 'A' && c<= 'F')
+		return c - 'A'+ 10;
+	return 0;
+}
+
+void encode_str(char *to,int tosize,const char *from)
+{
+	int tolen;
+	for (tolen=0;*from!='\0' && tolen +4 < tosize;++from)
+	{
+		if (isalnum(*from) ||strchr("/_.-~",*from) != (char *)0)
+		{
+			*to = *from;
+			++to;
+			++tolen;
+		}else {
+			sprintf(to,"%%%%02x",(int)*from & 0xff);
+			to += 3;
+			tolen += 3;
+		}
+	}
+	*to = '\0';
+}
+
+void decode_str(char *to,char *from)
+{
+	for (;*from != '\0';++to,++from){
+		if (from[0] == '%'&& isxdigit(from[2])){
+			*to = hexit(from[1])*16 + hexit(from[2]);
+			from += 2;
+		} else {
+			*to = *from;
+		}
+	}
+	*to = '\0';
+}
+
+void send_dir(int cfd,const char *dirname)
+{
+	int i,ret ;
+	char buf[1024] = {0};
+
+	sprintf(buf,"<html><head><title>Current Directory：%s</title></head>",dirname);
+	sprintf(buf+strlen(buf),"<body><h1>Current Directory :%s</h1><table>",dirname);
+
+	char enstr[1024] = {0};
+	char path[1024] = {0};
+
+	//目录项二级指针
+	struct dirent** ptr;
+	int num = scandir(dirname,&ptr,NULL,alphasort);
+
+	//遍历
+	for (i=0;i<num;i++)
+	{
+		char *name = ptr[i]->d_name;
+		//拼接文件的完整路径
+		sprintf(path,"%s%s",dirname,name);
+		printf("path=%s===============\n",path);
+		struct stat st;
+		stat(path,&st);
+	//编码
+	encode_str(enstr,sizeof(enstr),name);
+	
+	// 如果是文件
+        if(S_ISREG(st.st_mode)) {       
+            sprintf(buf+strlen(buf), 
+                    "<tr><td><a href=\"%s\">%s</a></td><td>%ld</td></tr>",
+                    enstr, name, (long)st.st_size);
+        } else if(S_ISDIR(st.st_mode)) {		// 如果是目录       
+            sprintf(buf+strlen(buf), 
+                    "<tr><td><a href=\"%s/\">%s/</a></td><td>%ld</td></tr>",
+                    enstr, name, (long)st.st_size);
+        }
+        ret = send(cfd, buf, strlen(buf), 0);
+        if (ret == -1) {
+            if (errno == EAGAIN) {
+                perror("send error:");
+                continue;
+            } else if (errno == EINTR) {
+                perror("send error:");
+                continue;
+            } else {
+                perror("send error:");
+                exit(1);
+            }
+        }
+        memset(buf, 0, sizeof(buf));
+        // 字符串拼接
+    }
+
+    sprintf(buf+strlen(buf), "</table></body></html>");
+    send(cfd, buf, strlen(buf), 0);
+
+    printf("dir message send OK!!!!\n");
+#if 0
+    // 打开目录
+    DIR* dir = opendir(dirname);
+    if(dir == NULL)
+    {
+        perror("opendir error");
+        exit(1);
+    }
+
+    // 读目录
+    struct dirent* ptr = NULL;
+    while( (ptr = readdir(dir)) != NULL )
+    {
+        char* name = ptr->d_name;
+    }
+    closedir(dir);
+#endif
 }
 
 //处理http请求 
@@ -236,6 +354,8 @@ void http_request(int cfd,const char *request)
 	char method[16],path[256],protocol[16];
 	sscanf(request,"%[^ ] %[^ ] %[^ ]",method,path,protocol);
 	printf("method=%s, path=%s, protocol=%s\n",method,path,protocol);
+
+	decode_str(path,path);
 
 	char *file = path+1; 		//去掉path中的/获取访问的文件名
 	if (strcasecmp(path,"/")==0)
