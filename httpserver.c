@@ -165,8 +165,7 @@ void send_error(int cfd, int status, char *title, char *text)
 	send(cfd, "\r\n", 2, 0);
 
 	memset(buf, 0, sizeof(buf));
-
-	sprintf(buf, "<html><head><title>%d %s</title></head>\n", status, title);
+	sprintf(buf, "<html><head><link rel='shortcut icon' type='images/x-icon' href='./favicon.ico'><title>%d %s</title></head>\n", status, title);
 	sprintf(buf+strlen(buf), "<body bgcolor=\"#cc99cc\"><h2 align=\"center\">%d %s</h4>\n", status, title);
 	sprintf(buf+strlen(buf), "%s\n", text);
 	sprintf(buf+strlen(buf), "<hr>\n</body>\n</html>\n");
@@ -175,14 +174,14 @@ void send_error(int cfd, int status, char *title, char *text)
 	return ;
 }
 
-
 //回发HTTP响应
-void send_response(int cfd,int num,char *status,char *type,int len)
+void send_response(int cfd,int num,const char *status,char *type,int len)
 {
 	char buf[1024] = {0};
 	sprintf(buf,"HTTP/1.1 %d %s\r\n",num,status);
 	sprintf(buf+strlen(buf),"%s\r\n",type);
 	sprintf(buf+strlen(buf),"Content-Length:%d\r\n",len);
+
 	send(cfd,buf,strlen(buf),0);
 	send(cfd,"\r\n",2,0);
 }
@@ -197,7 +196,7 @@ void send_data(int cfd,const char *file)
 	{
 		//给用户显示错误页面
 		perror("open failure");
-		exit(1);
+		return;
 	}
 	while(n=read(fd,buf,sizeof(buf)))
 	{
@@ -209,17 +208,40 @@ void send_data(int cfd,const char *file)
 		int res = send(cfd,buf,n,0);
 		if (res == -1)
 		{
-			perror("send file error");
-			exit(1);
-		}
+			if (errno == EAGAIN)
+			{
+				perror("send file error eagain");
+				continue;
+			}else if (errno == EINTR)
+			{
+				perror("send file error eintr");
+				continue;
+			}else {
+				perror("send file error");
+				exit(1);
+			}
+		}				
 	}
 	close(fd);
 }
-
-
-//处理http请求 判断文件是否存在 
-void http_request(int cfd,const char *file)
+void send_dir(int cfd,const char *file)
 {
+	return;
+}
+
+//处理http请求 
+void http_request(int cfd,const char *request)
+{
+	//拆分http请求行
+	char method[16],path[256],protocol[16];
+	sscanf(request,"%[^ ] %[^ ] %[^ ]",method,path,protocol);
+	printf("method=%s, path=%s, protocol=%s\n",method,path,protocol);
+
+	char *file = path+1; 		//去掉path中的/获取访问的文件名
+	if (strcasecmp(path,"/")==0)
+	{ 	//换为当前目录
+		file = "./";
+	}	
 
 	struct stat sbuf;
 	int ret = stat(file,&sbuf);
@@ -228,23 +250,27 @@ void http_request(int cfd,const char *file)
 	if (ret != 0)
 	{
 		//给浏览器回发404页面
-		
 		send_error(cfd,404,"Not Found","No such file or directory");
-		perror("open file failure");
+		//perror("open file failure");
+		return;
 	}
 
 	//请求资源存在
-	if (S_ISREG(sbuf.st_mode)) 	//当前资源是文件	
+	if (S_ISREG(sbuf.st_mode)) 		//当前资源是文件	
 	{
 		//回发http响应头
 		send_response(cfd,200,"OK",get_file_type(file),sbuf.st_size);
-		//回发数据
+		//回发文件数据
 		send_data(cfd,file);
 
-	}
+	} else if (S_ISDIR(sbuf.st_mode))	//请求资源是目录
+	{
+		//回发响应头
+		send_response(cfd,200,"OK",get_file_type(".html"),-1);
+		//发送当前目录信息
+		send_dir(cfd,file);
 
-			
-
+	}			
 }
 
 void do_read(int cfd,int epfd)
@@ -257,10 +283,8 @@ void do_read(int cfd,int epfd)
 		printf("客户端已断开连接\n");
 		disconnect(cfd,epfd);
 	}else {
-		char method[16],path[256],protocol[16];
-		sscanf(line,"%[^ ] %[^ ] %[^ ]",method,path,protocol);
-		printf("method=%s, path=%s, protocol=%s\n",method,path,protocol);
-
+		printf("=============请求头=============\n");
+		printf("请求首行数据:%s\n",line);
 		while(1)
 		{
 			char buf[4096]= {0} ;
@@ -268,13 +292,13 @@ void do_read(int cfd,int epfd)
 			if ((len == '\n') || (len == -1))
 				break;
 		}
-		if (strncasecmp(method,"GET",3) == 0)	//忽略大小写比较前n个字符
-		{
-			char *file = path + 1;//取出要访问的文件名
-			http_request(cfd,file);
-		}		
 	}
-
+	printf("=================The End==============\n");
+	if (strncasecmp("GET",line,3) == 0)	//忽略大小写比较前n个字符
+	{
+		http_request(cfd,line);
+		disconnect(cfd,epfd);
+	}		
 }
 
 void do_accept(int lfd,int epfd)
